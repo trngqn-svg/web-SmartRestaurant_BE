@@ -126,12 +126,12 @@ export class AuthService {
       const typ = payload.typ as AuthSubjectType;
 
       if (typ === 'ACCOUNT') {
-        const acc = await this.accounts.findById(sub); // ensure select +refreshTokenHash
+        const acc = await this.accounts.findById(sub);
         if (!acc?.refreshTokenHash) throw new UnauthorizedException('No refresh token');
         const ok = await compareToken(refreshToken, acc.refreshTokenHash);
         if (!ok) throw new UnauthorizedException('Refresh token invalid');
       } else {
-        const user = await this.users.findById(sub); // ensure select +refreshTokenHash
+        const user = await this.users.findById(sub);
         if (!user?.refreshTokenHash) throw new UnauthorizedException('No refresh token');
         const ok = await compareToken(refreshToken, user.refreshTokenHash);
         if (!ok) throw new UnauthorizedException('Refresh token invalid');
