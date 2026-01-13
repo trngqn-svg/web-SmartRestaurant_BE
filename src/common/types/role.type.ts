@@ -1,1 +1,1 @@
-export type AppRole = 'WAITER' | 'KDS' | 'USER';
+export type AppRole = 'WAITER' | 'KDS' | 'USER' | 'ADMIN' | 'SUPER_ADMIN';
