@@ -86,7 +86,7 @@ export class OrdersGateway implements OnGatewayConnection {
     tableNumber: string;
     totalCents: number;
     note?: string;
-    method: 'CASH';
+    method: 'ONLINE' | 'CASH';
   }) {
     const rid = RESTAURANT_ID;
     this.server.to(`restaurant:${rid}:waiter`).emit('bill.payment_pending', data);

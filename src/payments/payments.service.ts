@@ -1,11 +1,33 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { ConfigService } from '@nestjs/config';
 import { Model, Types } from 'mongoose';
-import { RESTAURANT_ID } from '../config/restaurant.config';
-import { Payment, PaymentDocument, PaymentProvider } from './payment.schema';
+
+import { Payment, PaymentDocument } from './payment.schema';
+import { CreateVnpayDto } from './dto/create-vnpay.dto';
+import { buildQuery, formatVnpDate, hmacSHA512, sortObject } from './vnpay.util';
 import { Bill, BillDocument } from '../bills/bill.schema';
 import { TableSession, TableSessionDocument } from '../table-sessions/table-session.schema';
-import { BillsService } from '../bills/bills.service';
+import { Order, OrderDocument } from '../orders/order.schema';
+import { pickVnpParams, verifyVnpaySecureHash } from './vnpay.verify';
+
+import { OrdersGateway } from '../orders/orders.gateway';
+import { PublicOrdersGateway } from '../orders/public-orders.gateway';
+import { RESTAURANT_ID } from '../config/restaurant.config';
+
+function centsToVnd(totalCents: number) {
+  return Math.round(Number(totalCents || 0));
+}
+
+function asString(x: any) {
+  if (x === undefined || x === null) return '';
+  return String(x);
+}
 
 @Injectable()
 export class PaymentsService {
@@ -13,143 +35,304 @@ export class PaymentsService {
     @InjectModel(Payment.name) private readonly paymentModel: Model<PaymentDocument>,
     @InjectModel(Bill.name) private readonly billModel: Model<BillDocument>,
     @InjectModel(TableSession.name) private readonly sessionModel: Model<TableSessionDocument>,
-    private readonly billsService: BillsService,
+    @InjectModel(Order.name) private readonly orderModel: Model<OrderDocument>,
+    private readonly config: ConfigService,
+
+    private readonly ordersGateway: OrdersGateway,
+    private readonly publicGateway: PublicOrdersGateway,
   ) {}
 
-  /**
-   * Create checkout (mock now, vnpay later)
-   * POST /public/bills/:billId/payments
-   */
-  async createBillPayment(args: {
-    billId: string;
-    provider: PaymentProvider;
-    amountCents?: number;
-  }) {
-    const { billId, provider } = args;
+  private mustGetEnv(key: string) {
+    const v = this.config.get<string>(key);
+    if (!v) throw new BadRequestException(`Missing env: ${key}`);
+    return v;
+  }
 
-    let bid: Types.ObjectId;
+  private parseObjectId(id: string, name: string) {
     try {
-      bid = new Types.ObjectId(billId);
+      return new Types.ObjectId(id);
     } catch {
-      throw new BadRequestException('Invalid billId');
+      throw new BadRequestException(`Invalid ${name}`);
     }
+  }
 
-    const bill: any = await this.billModel.findOne({ _id: bid, restaurantId: RESTAURANT_ID }).lean();
-    if (!bill) throw new NotFoundException('Bill not found');
+  private isObjectId(x: any): x is Types.ObjectId {
+    return x instanceof Types.ObjectId;
+  }
 
-    if (String(bill.status).toUpperCase() === 'PAID') {
-      throw new ConflictException('Bill already PAID');
-    }
+  private normalizeOrderIds(xs: any[]): Types.ObjectId[] {
+    return (xs ?? [])
+      .map((x: any) => {
+        try {
+          return new Types.ObjectId(x);
+        } catch {
+          return null;
+        }
+      })
+      .filter(this.isObjectId);
+  }
 
-    const s: any = await this.sessionModel.findOne({ _id: bill.sessionId, restaurantId: RESTAURANT_ID }).lean();
-    if (!s) throw new NotFoundException('Session not found');
+  private async markOrdersBilled(args: {
+    sessionId: Types.ObjectId;
+    billId: Types.ObjectId;
+    orderIds: Types.ObjectId[];
+    now: Date;
+  }) {
+    const { sessionId, billId, orderIds, now } = args;
+    if (!orderIds.length) return;
 
-    const amountCents = Number(args.amountCents ?? bill.totalCents ?? 0);
-    if (!Number.isFinite(amountCents) || amountCents <= 0) {
-      throw new BadRequestException('Invalid amountCents');
-    }
+    await this.orderModel.updateMany(
+      {
+        restaurantId: RESTAURANT_ID,
+        sessionId,
+        _id: { $in: orderIds },
+        $or: [{ billId: null }, { billId: { $exists: false } }],
+      },
+      { $set: { billId, billedAt: now } },
+    );
+  }
 
-    // Create payment pending
-    const p: any = await this.paymentModel.create({
-      restaurantId: RESTAURANT_ID,
-      billId: bid,
-      sessionId: bill.sessionId,
-      provider,
-      status: 'pending',
-      amountCents,
+  async createVnpayPayment(dto: CreateVnpayDto, ctx: { restaurantId: string; ipAddr: string }) {
+    const tmnCode = this.mustGetEnv('VNP_TMN_CODE');
+    const hashSecret = this.mustGetEnv('VNP_HASH_SECRET');
+    const payUrl = this.mustGetEnv('VNP_PAY_URL');
+    const returnUrl = this.mustGetEnv('VNP_RETURN_URL');
+
+    const billId = this.parseObjectId(dto.billId, 'billId');
+
+    const bill: any = await this.billModel.findOne({
+      _id: billId,
+      restaurantId: ctx.restaurantId,
     });
 
-    // For mock: checkoutUrl points to FE route /mock-pay
-    // NOTE: FE route depends on your router. Here use /mock-pay?pid=...&billId=...
-    // If your FE is at same origin, this is ok. If not, set FRONTEND_URL env.
-    const frontendBase = process.env.FRONTEND_URL || '';
-    const checkoutUrl = `${frontendBase}/mock-pay?pid=${encodeURIComponent(String(p._id))}&billId=${encodeURIComponent(
-      String(bid),
-    )}`;
+    if (!bill) throw new NotFoundException('Bill not found');
+    if (bill.status === 'PAID') throw new ConflictException('Bill already paid');
+    if (bill.status === 'CANCELLED') throw new ConflictException('Bill cancelled');
+
+    const amountVnd = centsToVnd(bill.totalCents);
+    if (!amountVnd || amountVnd <= 0) {
+      throw new BadRequestException('Bill total is invalid');
+    }
+
+    const txnRef = `B${bill._id.toString()}_${Date.now()}`;
+    const now = new Date();
+
+    if (bill.status !== 'PAYMENT_PENDING' || bill.method !== 'ONLINE') {
+      bill.status = 'PAYMENT_PENDING';
+      bill.method = 'ONLINE';
+      bill.requestedAt = bill.requestedAt ?? now;
+      await bill.save();
+    }
+
+    await this.sessionModel.updateOne(
+      { _id: bill.sessionId, restaurantId: ctx.restaurantId, status: { $ne: 'CLOSED' } },
+      {
+        $set: {
+          status: 'PAYMENT_PENDING',
+          activeBillId: bill._id,
+          billRequestedAt: now,
+        },
+      },
+    );
+
+    this.ordersGateway.emitBillPaymentPending({
+      billId: String(bill._id),
+      sessionId: String(bill.sessionId),
+      tableId: bill.tableId ? String(bill.tableId) : undefined,
+      tableNumber: bill.tableNumberSnapshot,
+      totalCents: Number(bill.totalCents || 0),
+      note: bill.note ?? '',
+      method: 'ONLINE',
+    });
+
+    await this.paymentModel.create({
+      restaurantId: ctx.restaurantId,
+      billId: bill._id,
+      sessionId: bill.sessionId,
+      tableId: bill.tableId,
+      provider: 'VNPAY',
+      txnRef,
+      amountVnd,
+      status: 'PENDING',
+    });
+
+    const vnpParams: Record<string, any> = {
+      vnp_Version: '2.1.0',
+      vnp_Command: 'pay',
+      vnp_TmnCode: tmnCode,
+      vnp_Locale: 'vn',
+      vnp_CurrCode: 'VND',
+      vnp_TxnRef: txnRef,
+      vnp_OrderInfo: `Thanh toan bill ${bill._id.toString()} - Ban ${bill.tableNumberSnapshot}`,
+      vnp_OrderType: 'other',
+      vnp_Amount: Math.round(amountVnd * 100),
+      vnp_ReturnUrl: returnUrl,
+      vnp_IpAddr: ctx.ipAddr,
+      vnp_CreateDate: formatVnpDate(),
+    };
+
+    const sorted = sortObject(vnpParams);
+    const signData = buildQuery(sorted);
+    const secureHash = hmacSHA512(hashSecret, signData);
+    const paymentUrl = `${payUrl}?${buildQuery({ ...sorted, vnp_SecureHash: secureHash })}`;
 
     await this.paymentModel.updateOne(
-      { _id: p._id, restaurantId: RESTAURANT_ID },
-      { $set: { checkoutUrl, providerRef: String(p._id) } },
+      { restaurantId: ctx.restaurantId, txnRef },
+      { $set: { rawCreateParams: { ...sorted, vnp_SecureHash: secureHash } } },
     );
+
+    return {
+      billId: bill._id.toString(),
+      sessionId: bill.sessionId.toString(),
+      tableId: bill.tableId.toString(),
+      txnRef,
+      amountVnd,
+      paymentUrl,
+    };
+  }
+
+  async handleVnpayReturn(rawQuery: Record<string, any>, ctx: { restaurantId: string }) {
+    const hashSecret = this.mustGetEnv('VNP_HASH_SECRET');
+
+    const vnp = pickVnpParams(rawQuery);
+    const v = verifyVnpaySecureHash(vnp, hashSecret);
+
+    const txnRef = asString(vnp['vnp_TxnRef']);
+    const responseCode = asString(vnp['vnp_ResponseCode']);
+    const transactionNo = asString(vnp['vnp_TransactionNo']);
+
+    if (txnRef) {
+      await this.paymentModel.updateOne(
+        { restaurantId: ctx.restaurantId, txnRef, provider: 'VNPAY' },
+        {
+          $set: {
+            rawReturnParams: vnp,
+            vnpResponseCode: responseCode || undefined,
+            vnpTransactionNo: transactionNo || undefined,
+          },
+        },
+      );
+    }
 
     return {
       ok: true,
-      provider,
-      billId: String(bid),
-      paymentId: String(p._id),
-      checkoutUrl,
+      verified: v.ok,
+      txnRef,
+      responseCode,
+      transactionNo,
+      message: asString(vnp['vnp_OrderInfo']),
     };
   }
 
-  async getPayment(paymentId: string) {
-    let pid: Types.ObjectId;
+  async handleVnpayIpn(raw: Record<string, any>, ctx: { restaurantId: string }) {
+    const hashSecret = this.mustGetEnv('VNP_HASH_SECRET');
+
+    const vnp = pickVnpParams(raw);
+
+    let v;
     try {
-      pid = new Types.ObjectId(paymentId);
+      v = verifyVnpaySecureHash(vnp, hashSecret);
     } catch {
-      throw new BadRequestException('Invalid paymentId');
+      return { RspCode: '97', Message: 'Invalid signature' };
     }
 
-    const p: any = await this.paymentModel.findOne({ _id: pid, restaurantId: RESTAURANT_ID }).lean();
-    if (!p) throw new NotFoundException('Payment not found');
+    if (!v.ok) return { RspCode: '97', Message: 'Invalid signature' };
 
-    return {
-      paymentId: String(p._id),
-      billId: String(p.billId),
-      amountCents: Number(p.amountCents || 0),
-      provider: p.provider,
-      status: p.status,
-      createdAt: p.createdAt ? new Date(p.createdAt).toISOString() : undefined,
-    };
-  }
+    const txnRef = asString(vnp['vnp_TxnRef']);
+    const responseCode = asString(vnp['vnp_ResponseCode']);
+    const transactionStatus = asString(vnp['vnp_TransactionStatus']);
+    const transactionNo = asString(vnp['vnp_TransactionNo']);
 
-  /**
-   * mock webhook success -> set payment succeeded -> mark bill PAID online
-   */
-  async mockSuccess(paymentId: string) {
-    let pid: Types.ObjectId;
-    try {
-      pid = new Types.ObjectId(paymentId);
-    } catch {
-      throw new BadRequestException('Invalid paymentId');
-    }
+    if (!txnRef) return { RspCode: '01', Message: 'Missing TxnRef' };
+
+    const payment = await this.paymentModel.findOne({
+      restaurantId: ctx.restaurantId,
+      txnRef,
+      provider: 'VNPAY',
+    });
+
+    if (!payment) return { RspCode: '01', Message: 'Payment not found' };
+    if (payment.status === 'SUCCESS') return { RspCode: '00', Message: 'Already confirmed' };
+    if (payment.status === 'FAILED') return { RspCode: '00', Message: 'Already failed' };
+
+    const isSuccess =
+      responseCode === '00' && (transactionStatus === '' || transactionStatus === '00');
+
+    await this.paymentModel.updateOne(
+      { _id: payment._id },
+      {
+        $set: {
+          rawIpnParams: vnp,
+          vnpResponseCode: responseCode || undefined,
+          vnpTransactionNo: transactionNo || undefined,
+        },
+      },
+    );
+
+    const bill: any = await this.billModel.findOne({
+      _id: payment.billId,
+      restaurantId: ctx.restaurantId,
+    });
+    if (!bill) return { RspCode: '01', Message: 'Bill not found' };
+
+    const session: any = await this.sessionModel.findOne({
+      _id: payment.sessionId,
+      restaurantId: ctx.restaurantId,
+    });
+    if (!session) return { RspCode: '01', Message: 'Session not found' };
 
     const now = new Date();
 
-    // atomic status change
-    const p: any = await this.paymentModel.findOneAndUpdate(
-      { _id: pid, restaurantId: RESTAURANT_ID, status: 'pending', provider: 'mock' },
-      { $set: { status: 'succeeded', succeededAt: now } },
-      { new: true },
-    );
-
-    if (!p) throw new ConflictException('Payment is not pending (or not found)');
-
-    // Mark bill PAID via BillsService.payOnline (expects tableId+token) -> not suitable for webhook
-    // => Call a new internal helper in BillsService that marks by billId directly.
-    // If you don't have it yet, add method: payOnlineByBillId(billId)
-    await this.billsService.payOnlineByBillId(String(p.billId));
-
-    return { ok: true, paymentId: String(p._id), billId: String(p.billId) };
-  }
-
-  async mockFail(paymentId: string) {
-    let pid: Types.ObjectId;
-    try {
-      pid = new Types.ObjectId(paymentId);
-    } catch {
-      throw new BadRequestException('Invalid paymentId');
+    if (!isSuccess) {
+      await this.paymentModel.updateOne(
+        { _id: payment._id, status: 'PENDING' },
+        { $set: { status: 'FAILED' } },
+      );
+      return { RspCode: '00', Message: 'Confirm Failed' };
     }
 
-    const now = new Date();
-
-    const p: any = await this.paymentModel.findOneAndUpdate(
-      { _id: pid, restaurantId: RESTAURANT_ID, status: 'pending', provider: 'mock' },
-      { $set: { status: 'failed', failedAt: now } },
-      { new: true },
+    await this.paymentModel.updateOne(
+      { _id: payment._id, status: 'PENDING' },
+      { $set: { status: 'SUCCESS' } },
     );
 
-    if (!p) throw new ConflictException('Payment is not pending (or not found)');
+    if (bill.status !== 'PAID') {
+      bill.status = 'PAID';
+      bill.method = 'ONLINE';
+      bill.paidAt = now;
+      await bill.save();
+    }
 
-    return { ok: true, paymentId: String(p._id), status: 'failed' };
+    const orderIds = this.normalizeOrderIds(bill.orderIds ?? []);
+    await this.markOrdersBilled({
+      sessionId: bill.sessionId,
+      billId: bill._id,
+      orderIds,
+      now,
+    });
+
+    await this.sessionModel.updateOne(
+      { _id: bill.sessionId, restaurantId: ctx.restaurantId },
+      { $set: { status: 'PAID', paidAt: now, activeBillId: bill._id } },
+    );
+
+    this.publicGateway.emitToSession(bill.sessionKey, 'bill.paid', {
+      billId: String(bill._id),
+      status: 'PAID',
+      method: 'ONLINE',
+      totalCents: Number(bill.totalCents || 0),
+      paidAt: now.toISOString(),
+    });
+
+    this.ordersGateway.emitBillPaid({
+      billId: String(bill._id),
+      sessionId: String(bill.sessionId),
+      tableNumber: bill.tableNumberSnapshot,
+      method: 'ONLINE',
+      totalCents: Number(bill.totalCents || 0),
+      paidAt: now.toISOString(),
+    });
+
+    return { RspCode: '00', Message: 'Confirm Success' };
   }
 }

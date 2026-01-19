@@ -78,8 +78,8 @@ export class AuthController {
       res.cookie('rt_to', rt, {
         httpOnly: true,
         sameSite: 'lax',
-        maxAge: 5 * 60 * 1000, // 5 minutes
-        secure: true, // enable in HTTPS production
+        maxAge: 5 * 60 * 1000,
+        secure: true,
       });
     }
   }

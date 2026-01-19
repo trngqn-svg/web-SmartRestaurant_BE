@@ -10,6 +10,7 @@ import { PublicMenuModule } from './menu/public/public-menu.module';
 import { BillsModule } from './bills/bills.module';
 import { OrdersModule } from './orders/orders.module';
 import { ItemReviewsModule } from './menu/reviews/item-reviews.module';
+import { PaymentsModule } from './payments/payments.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { ItemReviewsModule } from './menu/reviews/item-reviews.module';
     BillsModule,
     OrdersModule,
     ItemReviewsModule,
+    PaymentsModule,
   ],
 })
 export class AppModule {}

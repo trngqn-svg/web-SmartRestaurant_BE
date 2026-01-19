@@ -1,4 +1,4 @@
-import { Module, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 
 import { BillsService } from './bills.service';
@@ -12,13 +12,11 @@ import { TableSession, TableSessionSchema } from '../table-sessions/table-sessio
 import { TableSessionsModule } from '../table-sessions/table-sessions.module';
 import { ModifierGroup, ModifierGroupSchema } from 'src/menu/modifiers/modifier-group.schema';
 import { ModifierOption, ModifierOptionSchema } from 'src/menu/modifiers/modifier-option.schema';
-import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
   imports: [
     OrdersModule,
     TableSessionsModule,
-    forwardRef(() => PaymentsModule),
     MongooseModule.forFeature([
       { name: Bill.name, schema: BillSchema },
       { name: Order.name, schema: OrderSchema },
