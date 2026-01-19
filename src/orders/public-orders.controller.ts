@@ -1,9 +1,11 @@
-import { Controller, Get, Post, Query, Param, Body } from '@nestjs/common';
+import { Controller, Get, Post, Query, Param, Body, UseGuards } from '@nestjs/common';
 import { OpenSessionQueryDto } from './dto/open-session.dto';
 import { PublicOrdersService } from './public-orders.service';
 import { UpdateOrderItemsDto } from './dto/update-order-items.dto';
+import { OptionalJwtAuthGuard } from 'src/common/guards/optional-jwt-auth.guard';
 
 @Controller('/public/orders')
+@UseGuards(OptionalJwtAuthGuard)
 export class PublicOrdersController {
   constructor(private readonly service: PublicOrdersService) {}
 

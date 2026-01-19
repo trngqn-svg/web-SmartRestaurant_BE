@@ -2,7 +2,6 @@ import {
   Injectable,
   UnauthorizedException,
   NotFoundException,
-  ForbiddenException,
   BadRequestException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -16,12 +15,9 @@ import { Order, OrderDocument } from './order.schema';
 import { MenuItem, MenuItemDocument } from '../menu/items/item.schema';
 import { ModifierOption, ModifierOptionDocument } from '../menu/modifiers/modifier-option.schema';
 import { OrdersGateway } from './orders.gateway';
+import { TableSessionsService } from '../table-sessions/table-sessions.service';
 
 type QrPayload = { tableId: string; v: number; restaurantId?: string };
-
-function makeSessionKey(tableId: string, token: string) {
-  return crypto.createHash('sha256').update(`${tableId}.${token}`).digest('hex');
-}
 
 @Injectable()
 export class PublicOrdersService {
@@ -31,7 +27,8 @@ export class PublicOrdersService {
     @InjectModel(Order.name) private readonly orderModel: Model<OrderDocument>,
     @InjectModel(MenuItem.name) private readonly itemModel: Model<MenuItemDocument>,
     @InjectModel(ModifierOption.name) private readonly optModel: Model<ModifierOptionDocument>,
-    private readonly ordersGateway: OrdersGateway, // staff ws for "order.submitted"
+    private readonly ordersGateway: OrdersGateway,
+    private readonly tableSessions: TableSessionsService,
   ) {}
 
   private verifyQr(token: string): QrPayload {
@@ -46,53 +43,62 @@ export class PublicOrdersService {
   }
 
   async openSession(tableId: string, token: string) {
-    const payload = this.verifyQr(token);
-    if (payload.tableId !== tableId) throw new UnauthorizedException('Token invalid');
+  const { sessionId, sessionKey, tableNumber } =
+    await this.tableSessions.openOrGetActive(tableId, token);
 
-    const table = await this.tableModel.findById(tableId).lean();
-    if (!table) throw new NotFoundException('Cannot find table');
-    if (table.status === 'inactive') throw new ForbiddenException('Table is inactive');
-    if ((table.qrTokenVersion ?? 0) !== payload.v) throw new UnauthorizedException('QR is expired');
+  const restaurantId = RESTAURANT_ID;
 
-    const sessionKey = makeSessionKey(tableId, token);
-    const restaurantId = RESTAURANT_ID;
+  const existing = await this.orderModel.findOne({
+    restaurantId,
+    tableId: new Types.ObjectId(tableId),
+    status: "draft",
+    sessionId: new Types.ObjectId(sessionId),
+    sessionKey,
+  }).lean();
 
-    const existing = await this.orderModel
-      .findOne({
-        restaurantId,
-        tableId: new Types.ObjectId(tableId),
-        status: 'draft',
-        sessionKey,
-      })
-      .lean();
-
-    if (existing) return { orderId: String(existing._id), status: existing.status };
-
-    const created = await this.orderModel.create({
-      restaurantId,
-      tableId: new Types.ObjectId(tableId),
-      tableNumberSnapshot: table.tableNumber,
-      status: 'draft',
-      items: [],
-      subtotalCents: 0,
-      totalCents: 0,
+  if (existing) {
+    return {
+      orderId: String(existing._id),
+      status: existing.status,
+      sessionId,
       sessionKey,
-    });
-
-    return { orderId: String(created._id), status: created.status };
+    };
   }
+
+  const created = await this.orderModel.create({
+    restaurantId,
+    tableId: new Types.ObjectId(tableId),
+    tableNumberSnapshot: tableNumber,
+    status: "draft",
+    items: [],
+    subtotalCents: 0,
+    totalCents: 0,
+    sessionId: new Types.ObjectId(sessionId),
+    sessionKey,
+  });
+
+  return {
+    orderId: String(created._id),
+    status: created.status,
+    sessionId,
+    sessionKey,
+  };
+}
 
   async updateDraftItems(orderId: string, tableId: string, token: string, dto: any) {
     const payload = this.verifyQr(token);
     if (payload.tableId !== tableId) throw new UnauthorizedException('Token invalid');
 
-    const sessionKey = makeSessionKey(tableId, token);
+    const s = await this.tableSessions.openOrGetActive(tableId, token);
+    const sessionKey = s.sessionKey;
+    const sessionId = s.sessionId;
     const restaurantId = RESTAURANT_ID;
 
     const order: any = await this.orderModel.findOne({
       _id: orderId,
       restaurantId,
       tableId: new Types.ObjectId(tableId),
+      sessionId: new Types.ObjectId(sessionId),
       status: 'draft',
       sessionKey,
     });
@@ -179,13 +185,16 @@ export class PublicOrdersService {
     const payload = this.verifyQr(token);
     if (payload.tableId !== tableId) throw new UnauthorizedException('Token invalid');
 
-    const sessionKey = makeSessionKey(tableId, token);
+    const s = await this.tableSessions.openOrGetActive(tableId, token);
+    const sessionKey = s.sessionKey;
+    const sessionId = s.sessionId;
     const restaurantId = RESTAURANT_ID;
 
     const order: any = await this.orderModel.findOne({
       _id: orderId,
       restaurantId,
       tableId: new Types.ObjectId(tableId),
+      sessionId: new Types.ObjectId(sessionId),
       status: 'draft',
       sessionKey,
     });
@@ -218,18 +227,17 @@ export class PublicOrdersService {
     const payload = this.verifyQr(token);
     if (payload.tableId !== tableId) throw new UnauthorizedException('Token invalid');
 
-    const sessionKey = makeSessionKey(tableId, token);
+    const s = await this.tableSessions.openOrGetActive(tableId, token);
+    const sessionKey = s.sessionKey;
+    const sessionId = s.sessionId;
     const restaurantId = RESTAURANT_ID;
 
-    const orders = await this.orderModel
-      .find({
-        restaurantId,
-        tableId: new Types.ObjectId(tableId),
-        sessionKey,
-        status: { $ne: 'draft' },
-      })
-      .sort({ createdAt: -1 })
-      .lean();
+    const orders = await this.orderModel.find({
+      restaurantId,
+      tableId: new Types.ObjectId(tableId),
+      sessionId: new Types.ObjectId(sessionId),
+      status: { $ne: 'draft' },
+    }).sort({ createdAt: -1 }).lean();
 
     return orders.map((o: any) => ({
       orderId: String(o._id),
@@ -259,48 +267,51 @@ export class PublicOrdersService {
   }
 
   async getMyOrder(orderId: string, tableId: string, token: string) {
-    const payload = this.verifyQr(token);
-    if (payload.tableId !== tableId) throw new UnauthorizedException('Token invalid');
+  const payload = this.verifyQr(token);
+  if (payload.tableId !== tableId) throw new UnauthorizedException('Token invalid');
 
-    const sessionKey = makeSessionKey(tableId, token);
-    const restaurantId = RESTAURANT_ID;
+  // ✅ đồng bộ session theo TableSessionsService
+  const s = await this.tableSessions.openOrGetActive(tableId, token);
+  const restaurantId = RESTAURANT_ID;
 
-    const o = await this.orderModel
-      .findOne({
-        _id: orderId,
-        restaurantId,
-        tableId: new Types.ObjectId(tableId),
-        sessionKey,
-        status: { $ne: 'draft' },
-      })
-      .lean();
+  const o = await this.orderModel
+    .findOne({
+      _id: orderId,
+      restaurantId,
+      tableId: new Types.ObjectId(tableId),
+      sessionId: new Types.ObjectId(s.sessionId),
+      sessionKey: s.sessionKey,
+      status: { $ne: 'draft' },
+    })
+    .lean();
 
-    if (!o) throw new NotFoundException('Order not found');
+  if (!o) throw new NotFoundException('Order not found');
 
-    return {
-      orderId: String(o._id),
-      status: o.status,
-      tableNumberSnapshot: o.tableNumberSnapshot,
-      items: (o.items ?? []).map((it: any) => ({
-        lineId: String(it._id),
-        itemId: String(it.itemId),
-        nameSnapshot: it.nameSnapshot,
-        unitPriceCentsSnapshot: it.unitPriceCentsSnapshot,
-        qty: it.qty,
-        modifiers: it.modifiers,
-        note: it.note,
-        lineTotalCents: it.lineTotalCents,
-        status: it.status ?? 'queued',
-        startedAt: it.startedAt,
-        readyAt: it.readyAt,
-        servedAt: it.servedAt,
-        cancelledAt: it.cancelledAt,
-      })),
-      subtotalCents: o.subtotalCents,
-      totalCents: o.totalCents,
-      submittedAt: o.submittedAt,
-      createdAt: o.createdAt,
-      updatedAt: o.updatedAt,
-    };
-  }
+  return {
+    orderId: String(o._id),
+    status: o.status,
+    tableNumberSnapshot: o.tableNumberSnapshot,
+    items: (o.items ?? []).map((it: any) => ({
+      lineId: String(it._id),
+      itemId: String(it.itemId),
+      nameSnapshot: it.nameSnapshot,
+      unitPriceCentsSnapshot: it.unitPriceCentsSnapshot,
+      qty: it.qty,
+      modifiers: it.modifiers,
+      note: it.note,
+      lineTotalCents: it.lineTotalCents,
+      status: it.status ?? 'queued',
+      startedAt: it.startedAt,
+      readyAt: it.readyAt,
+      servedAt: it.servedAt,
+      cancelledAt: it.cancelledAt,
+    })),
+    subtotalCents: o.subtotalCents,
+    totalCents: o.totalCents,
+    submittedAt: o.submittedAt,
+    createdAt: o.createdAt,
+    updatedAt: o.updatedAt,
+  };
+}
+
 }

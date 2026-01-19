@@ -7,8 +7,9 @@ import { AccountsModule } from './accounts/accounts.module';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { PublicMenuModule } from './menu/public/public-menu.module';
-import { PublicOrdersModule } from './orders/public-orders.module';
-
+import { BillsModule } from './bills/bills.module';
+import { OrdersModule } from './orders/orders.module';
+import { ItemReviewsModule } from './menu/reviews/item-reviews.module';
 
 @Module({
   imports: [
@@ -28,7 +29,9 @@ import { PublicOrdersModule } from './orders/public-orders.module';
     UsersModule,
     AuthModule,
     PublicMenuModule,
-    PublicOrdersModule,
+    BillsModule,
+    OrdersModule,
+    ItemReviewsModule,
   ],
 })
 export class AppModule {}

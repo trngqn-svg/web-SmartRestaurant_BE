@@ -1,13 +1,29 @@
-import { Body, Controller, Get, Post, Req, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Query,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
-import { UsersService } from '../users/users.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CookieUtil } from '../common/utils/cookie.util';
 import { GoogleAuthGuard } from '../common/guards/google-auth.guard';
 import { ConfigService } from '@nestjs/config';
+
+function sanitizeReturnTo(v?: string) {
+  if (!v) return null;
+  // only allow internal FE paths
+  if (!v.startsWith('/')) return null;
+  if (v.startsWith('//')) return null;
+  return v;
+}
 
 @Controller('/api/auth')
 export class AuthController {
@@ -53,12 +69,26 @@ export class AuthController {
 
   @Get('/google')
   @UseGuards(GoogleAuthGuard)
-  googleStart() {}
+  googleStart(
+    @Res({ passthrough: true }) res: Response,
+    @Query('returnTo') returnTo?: string,
+  ) {
+    const rt = sanitizeReturnTo(returnTo);
+    if (rt) {
+      res.cookie('rt_to', rt, {
+        httpOnly: true,
+        sameSite: 'lax',
+        maxAge: 5 * 60 * 1000, // 5 minutes
+        // secure: true, // enable in HTTPS production
+      });
+    }
+  }
 
   @Get('/google/callback')
   @UseGuards(GoogleAuthGuard)
   async googleCallback(@Req() req: any, @Res() res: Response) {
-    const { accessToken, refreshToken, homePath } = await this.auth.loginWithGoogle(req.user);
+    const { accessToken, refreshToken, homePath } =
+      await this.auth.loginWithGoogle(req.user);
 
     this.cookie.setRefreshCookie(res, refreshToken);
 
@@ -66,6 +96,11 @@ export class AuthController {
     const url = new URL(`${fe}/oauth/callback`);
     url.searchParams.set('accessToken', accessToken);
     url.searchParams.set('homePath', homePath);
+
+    const returnTo = sanitizeReturnTo(req.cookies?.rt_to);
+    if (returnTo) url.searchParams.set('returnTo', returnTo);
+
+    res.clearCookie('rt_to', { sameSite: 'lax' });
 
     return res.redirect(url.toString());
   }

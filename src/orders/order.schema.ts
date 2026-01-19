@@ -108,8 +108,20 @@ export class Order {
 
   @Prop({ default: '' })
   orderNote?: string;
+
+  @Prop({ type: Types.ObjectId, index: true })
+  sessionId?: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, index: true })
+  billId?: Types.ObjectId;
+
+  @Prop()
+  billedAt?: Date;
 }
 
 export const OrderSchema = SchemaFactory.createForClass(Order);
 OrderSchema.index({ restaurantId: 1, status: 1, createdAt: -1 });
 OrderSchema.index({ restaurantId: 1, tableId: 1, status: 1 });
+OrderSchema.index({ restaurantId: 1, status: 1, submittedAt: -1 });
+OrderSchema.index({ restaurantId: 1, tableId: 1, submittedAt: -1 });
+OrderSchema.index({ restaurantId: 1, tableNumberSnapshot: 1 });

@@ -1,9 +1,11 @@
-import { Controller, Get, Query, Param } from '@nestjs/common';
+import { Controller, Get, Query, Param, UseGuards } from '@nestjs/common';
 import { PublicMenuQueryDto } from './dto/public-menu.dto';
 import { PublicMenuService } from './public-menu.service';
 import { PublicItemReviewsQueryDto } from './dto/public-item-reviews.dto';
+import { OptionalJwtAuthGuard } from 'src/common/guards/optional-jwt-auth.guard';
 
 @Controller('/public')
+@UseGuards(OptionalJwtAuthGuard)
 export class PublicMenuController {
   constructor(private readonly service: PublicMenuService) {}
 
