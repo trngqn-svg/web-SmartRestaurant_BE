@@ -1,4 +1,3 @@
-// bills.service.ts
 import {
   BadRequestException,
   ConflictException,
@@ -18,7 +17,6 @@ import { PublicOrdersGateway } from '../orders/public-orders.gateway';
 import { TableSessionsService } from '../table-sessions/table-sessions.service';
 import { StaffTableSessionsService } from '../table-sessions/staff-table-sessions.service';
 
-// ✅ join để lấy tên modifier
 import { ModifierGroup, ModifierGroupDocument } from '../menu/modifiers/modifier-group.schema';
 import { ModifierOption, ModifierOptionDocument } from '../menu/modifiers/modifier-option.schema';
 

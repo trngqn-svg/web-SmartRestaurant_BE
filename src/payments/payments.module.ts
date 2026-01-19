@@ -1,25 +1,30 @@
-import { Module, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
-import { Payment, PaymentSchema } from './payment.schema';
+import { ConfigModule } from '@nestjs/config';
+
+import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
-import { PublicPaymentsController } from './public-payments.controller';
-import { MockPaymentsWebhookController } from './mock-webhook.controller';
+import { Payment, PaymentSchema } from './payment.schema';
 
 import { Bill, BillSchema } from '../bills/bill.schema';
 import { TableSession, TableSessionSchema } from '../table-sessions/table-session.schema';
-import { BillsModule } from '../bills/bills.module';
+import { Order, OrderSchema } from '../orders/order.schema';
+
+import { OrdersModule } from '../orders/orders.module';
 
 @Module({
   imports: [
-    forwardRef(() => BillsModule),
+    ConfigModule,
+    OrdersModule,
     MongooseModule.forFeature([
       { name: Payment.name, schema: PaymentSchema },
       { name: Bill.name, schema: BillSchema },
       { name: TableSession.name, schema: TableSessionSchema },
+      { name: Order.name, schema: OrderSchema },
     ]),
   ],
+  controllers: [PaymentsController],
   providers: [PaymentsService],
-  controllers: [PublicPaymentsController, MockPaymentsWebhookController],
   exports: [PaymentsService],
 })
 export class PaymentsModule {}
