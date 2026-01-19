@@ -45,3 +45,7 @@ export const ItemReviewSchema = SchemaFactory.createForClass(ItemReview);
 
 ItemReviewSchema.index({ restaurantId: 1, itemId: 1, createdAt: -1 });
 ItemReviewSchema.index({ restaurantId: 1, itemId: 1, rating: -1 });
+ItemReviewSchema.index(
+  { restaurantId: 1, itemId: 1, userId: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } },
+);

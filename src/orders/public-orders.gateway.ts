@@ -5,14 +5,10 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
-import * as crypto from 'crypto';
 import { RESTAURANT_ID } from '../config/restaurant.config';
+import { TableSessionsService } from '../table-sessions/table-sessions.service';
 
 type QrPayload = { tableId: string; v: number; restaurantId?: string };
-
-function makeSessionKey(tableId: string, token: string) {
-  return crypto.createHash('sha256').update(`${tableId}.${token}`).digest('hex');
-}
 
 @WebSocketGateway({
   cors: { origin: true, credentials: true },
@@ -21,7 +17,10 @@ function makeSessionKey(tableId: string, token: string) {
 export class PublicOrdersGateway implements OnGatewayConnection {
   @WebSocketServer() server: Server;
 
-  constructor(private readonly jwt: JwtService) {}
+  constructor(
+    private readonly jwt: JwtService,
+    private readonly tableSessions: TableSessionsService,
+  ) {}
 
   async handleConnection(socket: Socket) {
     const table = socket.handshake.auth?.table as string | undefined;
@@ -37,8 +36,8 @@ export class PublicOrdersGateway implements OnGatewayConnection {
       if (payload.restaurantId && payload.restaurantId !== RESTAURANT_ID) throw new Error();
       if (payload.tableId !== table) throw new Error();
 
-      const sessionKey = makeSessionKey(table, token);
-      socket.join(`session:${sessionKey}`);
+      const s = await this.tableSessions.openOrGetActive(table, token);
+      socket.join(`session:${s.sessionKey}`);
     } catch {
       return socket.disconnect(true);
     }
@@ -59,5 +58,25 @@ export class PublicOrdersGateway implements OnGatewayConnection {
     orderStatus?: string;
   }) {
     this.emitToSession(sessionKey, 'order.line_status_changed', data);
+  }
+
+  emitOrderUpdated(sessionKey: string, data: any) {
+    this.emitToSession(sessionKey, 'order.updated', data);
+  }
+
+  emitSessionClosed(sessionKey: string, data: {
+    sessionId: string;
+    status: 'CLOSED';
+    closedAt: string;
+  }) {
+    this.emitToSession(sessionKey, 'session.closed', data);
+  }
+
+  emitBillRequested(sessionKey: string, data: any) {
+    this.emitToSession(sessionKey, 'bill.requested', data);
+  }
+
+  emitBillPaid(sessionKey: string, data: any) {
+    this.emitToSession(sessionKey, 'bill.paid', data);
   }
 }

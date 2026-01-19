@@ -66,4 +66,67 @@ export class OrdersGateway implements OnGatewayConnection {
     this.server.to(`restaurant:${rid}:waiter`).emit('order.line_status_changed', data);
     this.server.to(`restaurant:${rid}:kds`).emit('order.line_status_changed', data);
   }
+
+  emitBillRequested(data: {
+    billId: string;
+    sessionId: string;
+    tableId?: string;
+    tableNumber: string;
+    totalCents: number;
+    note?: string;
+  }) {
+    const rid = RESTAURANT_ID;
+    this.server.to(`restaurant:${rid}:waiter`).emit('bill.requested', data);
+  }
+
+  emitBillPaymentPending(data: {
+    billId: string;
+    sessionId: string;
+    tableId?: string;
+    tableNumber: string;
+    totalCents: number;
+    note?: string;
+    method: 'CASH';
+  }) {
+    const rid = RESTAURANT_ID;
+    this.server.to(`restaurant:${rid}:waiter`).emit('bill.payment_pending', data);
+  }
+
+  emitBillAccepted(data: {
+    billId: string;
+    sessionId: string;
+    tableNumber: string;
+    totalCents: number;
+    method?: 'CASH' | 'ONLINE' | null;
+    paidAt?: string;
+  }) {
+    const rid = RESTAURANT_ID;
+    this.server.to(`restaurant:${rid}:waiter`).emit('bill.accepted', data);
+  }
+
+  emitBillPaid(data: {
+    billId: string;
+    sessionId: string;
+    tableNumber: string;
+    totalCents: number;
+    method: 'CASH' | 'ONLINE';
+    paidAt?: string;
+  }) {
+    const rid = RESTAURANT_ID;
+    this.server.to(`restaurant:${rid}:waiter`).emit('bill.paid', data);
+  }
+
+  emitSessionClosed(data: {
+    sessionId: string;
+    tableNumber: string;
+    closedAt?: string;
+  }) {
+    const rid = RESTAURANT_ID;
+    this.server.to(`restaurant:${rid}:waiter`).emit('session.closed', data);
+  }
+
+  emitToStaff(event: string, data: any) {
+    const rid = RESTAURANT_ID;
+    this.server.to(`restaurant:${rid}:waiter`).emit(event, data);
+  }
 }

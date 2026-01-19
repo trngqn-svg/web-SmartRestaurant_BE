@@ -5,15 +5,30 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('WAITER')
 @Controller('/staff/orders')
 export class StaffOrdersController {
   constructor(private readonly service: StaffOrdersService) {}
 
   @Roles('WAITER', 'ADMIN', 'SUPER_ADMIN', 'KDS')
   @Get()
-  list(@Query('status') status?: string) {
-    return this.service.list({ status });
+  list(
+    @Query('status') status?: string,
+    @Query('q') q?: string,
+    @Query('datePreset') datePreset?: 'today' | 'yesterday' | 'this_week' | 'this_month',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.service.list({
+      status,
+      q,
+      datePreset,
+      from,
+      to,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
   }
 
   @Roles('WAITER', 'ADMIN', 'SUPER_ADMIN')

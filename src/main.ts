@@ -9,11 +9,13 @@ async function bootstrap() {
   app.use(cookieParser());
 
   const config = app.get(ConfigService);
-  const origin = config.get<string>('VITE_APP_URL')!;
   const port = config.get<number>('PORT')!;
 
   app.enableCors({
-    origin: [origin],
+    origin: [
+      config.get<string>('VITE_APP_URL')!,
+      config.get<string>('VITE_ADMIN_APP_URL')!,
+    ],
     credentials: true,
   });
 

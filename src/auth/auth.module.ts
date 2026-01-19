@@ -15,7 +15,6 @@ import { GoogleStrategy } from '../common/strategies/google.strategy';
   imports: [
     AccountsModule,
     UsersModule,
-
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
