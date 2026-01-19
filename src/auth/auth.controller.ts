@@ -79,7 +79,7 @@ export class AuthController {
         httpOnly: true,
         sameSite: 'lax',
         maxAge: 5 * 60 * 1000, // 5 minutes
-        // secure: true, // enable in HTTPS production
+        secure: true, // enable in HTTPS production
       });
     }
   }
