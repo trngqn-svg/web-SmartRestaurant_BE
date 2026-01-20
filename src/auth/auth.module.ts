@@ -10,11 +10,13 @@ import { AuthService } from './auth.service';
 import { JwtAccessStrategy } from '../common/strategies/jwt-access.strategy';
 import { CookieUtil } from '../common/utils/cookie.util';
 import { GoogleStrategy } from '../common/strategies/google.strategy';
+import { PasswordResetModule } from './password-reset/password-reset.module';
 
 @Module({
   imports: [
     AccountsModule,
     UsersModule,
+    PasswordResetModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
