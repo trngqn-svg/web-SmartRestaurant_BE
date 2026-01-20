@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import envConfig from './config/env';
 import { MongooseModule } from '@nestjs/mongoose';
+import { ServeStaticModule } from '@nestjs/serve-static';
+import * as path from 'path';
 
 import { AccountsModule } from './accounts/accounts.module';
 import { UsersModule } from './users/users.module';
@@ -17,6 +19,11 @@ import { PaymentsModule } from './payments/payments.module';
     ConfigModule.forRoot({
       isGlobal: true,
       load: [envConfig],
+    }),
+
+    ServeStaticModule.forRoot({
+      rootPath: path.join(process.cwd(), 'uploads'),
+      serveRoot: '/uploads',
     }),
 
     MongooseModule.forRootAsync({

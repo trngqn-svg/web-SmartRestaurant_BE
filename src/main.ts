@@ -9,7 +9,7 @@ async function bootstrap() {
 
   app.use(cookieParser());
   app.useGlobalPipes(
-    new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+    new ValidationPipe({ whitelist: true, transform: true }),
   );
 
   const config = app.get(ConfigService);
