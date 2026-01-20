@@ -49,4 +49,12 @@ export class UsersService {
       status: 'ACTIVE',
     });
   }
+
+  updatePasswordHash(id: string, passwordHash: string) {
+    return this.model.findByIdAndUpdate(
+      id,
+      { password: passwordHash },
+      { new: true },
+    ).exec();
+  }
 }
