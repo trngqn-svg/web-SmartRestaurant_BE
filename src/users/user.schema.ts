@@ -15,17 +15,25 @@ export class User {
   role: 'USER';
 
   @Prop({ type: String, enum: ['ACTIVE', 'DISABLED'], default: 'ACTIVE' })
-  status: 'ACTIVE'| 'DISABLED';
+  status: 'ACTIVE' | 'DISABLED';
 
   @Prop({ type: String, default: null })
   refreshTokenHash: string | null;
 
-  @Prop({ type: String, default: null, unique: true, sparse: true, index: true })
-  googleId: string | null;
+  @Prop({ type: String, default: undefined })
+  googleId?: string;
 
-  // optional profile fields
   @Prop({ default: '' })
   fullName?: string;
+
+  @Prop({ type: String, default: '/uploads/avatars/default.png' })
+  avatarUrl: string;
+
+  @Prop({ type: String, default: null })
+  address: string | null;
+
+  @Prop({ type: String, default: null })
+  phoneNumber: string | null;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
