@@ -111,14 +111,11 @@ export class UsersService {
     return this.toMe(u);
   }
 
-  // ======= NEW: PASSWORD =======
-
   async changePassword(userId: string, oldPassword: string, newPassword: string) {
     const u = await this.model.findById(userId).exec();
     if (!u) throw new NotFoundException('User not found');
 
     if (!u.password) {
-      // user google chưa set password
       throw new ForbiddenException('Account does not have password. Use set-password first.');
     }
 

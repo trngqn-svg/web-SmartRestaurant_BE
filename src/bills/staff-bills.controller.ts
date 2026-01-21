@@ -24,7 +24,6 @@ listStaffBills(
   });
 }
 
-  // Waiter bấm Accept sau khi đã PAID -> close session
   @Post('/:billId/accept')
   accept(@Param('billId') billId: string) {
     return this.service.acceptPaidBill(billId);

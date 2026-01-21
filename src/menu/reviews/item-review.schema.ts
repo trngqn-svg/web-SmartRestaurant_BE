@@ -3,8 +3,6 @@ import { Types, HydratedDocument } from 'mongoose';
 
 export type ItemReviewDocument = HydratedDocument<ItemReview>;
 
-export type ReviewStatus = 'published' | 'hidden';
-
 @Schema({ timestamps: { createdAt: 'createdAt', updatedAt: 'updatedAt' } })
 export class ItemReview {
   @Prop({ required: true })
@@ -26,14 +24,11 @@ export class ItemReview {
   comment?: string;
 
   @Prop({ type: [String], default: [] })
-  photoUrls?: string[];
-
-  @Prop({ default: 'published', enum: ['published', 'hidden'] })
-  status: ReviewStatus;
+  photoUrls: string[];
 
   @Prop({ default: false })
   isDeleted: boolean;
-  
+
   @Prop({ type: Date })
   createdAt: Date;
 
@@ -45,7 +40,4 @@ export const ItemReviewSchema = SchemaFactory.createForClass(ItemReview);
 
 ItemReviewSchema.index({ restaurantId: 1, itemId: 1, createdAt: -1 });
 ItemReviewSchema.index({ restaurantId: 1, itemId: 1, rating: -1 });
-ItemReviewSchema.index(
-  { restaurantId: 1, itemId: 1, userId: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: false } },
-);
+ItemReviewSchema.index({ restaurantId: 1, userId: 1, createdAt: -1 });

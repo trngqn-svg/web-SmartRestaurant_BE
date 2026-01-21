@@ -19,6 +19,7 @@ import { StaffTableSessionsService } from '../table-sessions/staff-table-session
 
 import { ModifierGroup, ModifierGroupDocument } from '../menu/modifiers/modifier-group.schema';
 import { ModifierOption, ModifierOptionDocument } from '../menu/modifiers/modifier-option.schema';
+import { Table, TableDocument } from '../tables/table.schema';
 
 type Actor = { subjectType: 'USER' | 'ACCOUNT'; subjectId: string } | null | undefined;
 type BillTab = 'REQUESTED' | 'PAID' | 'DONE';
@@ -39,6 +40,7 @@ export class BillsService {
     @InjectModel(TableSession.name) private readonly sessionModel: Model<TableSessionDocument>,
     @InjectModel(ModifierGroup.name) private readonly modifierGroupModel: Model<ModifierGroupDocument>,
     @InjectModel(ModifierOption.name) private readonly modifierOptionModel: Model<ModifierOptionDocument>,
+    @InjectModel(Table.name) private readonly tableModel: Model<TableDocument>,
 
     private readonly ordersGateway: OrdersGateway,
     private readonly publicGateway: PublicOrdersGateway,
@@ -93,7 +95,7 @@ export class BillsService {
     }
 
     if (preset === 'this_week') {
-      const day = start.getDay(); // 0 CN, 1 T2...
+      const day = start.getDay();
       const diffToMon = (day + 6) % 7;
       start.setDate(start.getDate() - diffToMon);
       end.setDate(start.getDate() + 7);
@@ -124,10 +126,6 @@ export class BillsService {
     return { orders, orderIds: orders.map((o) => o._id), totalCents };
   }
 
-  /**
-   * ✅ Build name maps for modifier group/option IDs.
-   * Orders store: modifiers: [{ groupId, optionIds[], priceAdjustmentCents }]
-   */
   private async buildModifierNameMaps(orders: any[]) {
     const groupIds: Types.ObjectId[] = [];
     const optionIds: Types.ObjectId[] = [];
@@ -179,7 +177,6 @@ export class BillsService {
   }
 
   private splitAdjustment(totalAdj: number, n: number) {
-    // chia đều, option cuối nhận dư để không lệch tổng
     if (!n || n <= 0) return [];
     const base = Math.trunc(totalAdj / n);
     let rem = totalAdj - base * n;
@@ -224,7 +221,6 @@ export class BillsService {
               });
             });
 
-            // nếu không có optionIds nhưng vẫn có adjustment -> đưa 1 dòng "group" để không mất tiền
             if (optionIds.length === 0 && Number(m.priceAdjustmentCents || 0) !== 0) {
               mods.push({
                 groupNameSnapshot: groupName || undefined,
@@ -238,8 +234,8 @@ export class BillsService {
             lineId: String(it._id),
             nameSnapshot: it.nameSnapshot,
             qty: Number(it.qty || 0),
-            unitPriceCents: Number(it.unitPriceCentsSnapshot || 0), // ✅ đúng schema
-            lineTotalCents: Number(it.lineTotalCents || 0),          // ✅ đúng schema
+            unitPriceCents: Number(it.unitPriceCentsSnapshot || 0),
+            lineTotalCents: Number(it.lineTotalCents || 0),
             status: it.status,
             note: it.note ?? '',
             modifiers: mods,
@@ -525,7 +521,6 @@ export class BillsService {
 
     if (!bill) throw new NotFoundException('Bill not found');
 
-    // load orders referenced by bill
     const billOrderIds: Types.ObjectId[] = (bill.orderIds ?? [])
       .map((x: any) => {
         try {
@@ -548,7 +543,6 @@ export class BillsService {
           .lean()
       : [];
 
-    // served lines summary
     const servedLines: Array<{
       orderId: string;
       lineId: string;
@@ -589,13 +583,11 @@ export class BillsService {
     };
   }
 
-  // ✅ STAFF LIST: 3 tabs, DONE only has date filter, and returns order detail + modifiers name
   async listStaffBills(args: {
     tab?: BillTab;
     page?: number;
     limit?: number;
 
-    // only for DONE
     datePreset?: 'today' | 'yesterday' | 'this_week' | 'this_month';
     from?: string;
     to?: string;
@@ -610,7 +602,6 @@ export class BillsService {
     else if (tab === 'DONE') match.status = 'CANCELLED';
     else throw new BadRequestException('Invalid tab');
 
-    // ✅ filter only for DONE
     const createdAtRange = tab === 'DONE' ? this.parseDateRange(args) : null;
     if (createdAtRange) match.createdAt = createdAtRange;
 
@@ -619,7 +610,6 @@ export class BillsService {
       this.billModel.find(match).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
     ]);
 
-    // sessions map
     const sessionIds = bills
       .map((b: any) => b.sessionId)
       .filter(Boolean)
@@ -636,7 +626,6 @@ export class BillsService {
 
     const sMap = new Map(sessions.map((s: any) => [String(s._id), s]));
 
-    // load all orders referenced in this page
     const allOrderIds: Types.ObjectId[] = [];
     for (const b of bills as any[]) {
       for (const oid of b.orderIds ?? []) {
@@ -659,7 +648,6 @@ export class BillsService {
     const orderMap = new Map<string, any>();
     for (const o of orders) orderMap.set(String(o._id), o);
 
-    // ✅ build modifier name maps from orders in page
     const maps = await this.buildModifierNameMaps(orders);
 
     return {
@@ -672,7 +660,6 @@ export class BillsService {
         return {
           billId: String(b._id),
 
-          // raw + tab
           status: b.status,
           tab,
 
@@ -690,18 +677,13 @@ export class BillsService {
           cancelledAt: b.cancelledAt || null,
           createdAt: b.createdAt,
           updatedAt: b.updatedAt,
-
-          // ✅ nếu bạn muốn debug nhanh:
           orderIds: (b.orderIds ?? []).map((x: any) => String(x)),
-
-          // ✅ orders detail (lines + modifiers name)
           orders: this.toBillOrders(orderMap, b, maps),
         };
       }),
     };
   }
 
-  // ✅ acceptPaidBill: MUST move bill to DONE (CANCELLED) as per your requirement
   async acceptPaidBill(billId: string) {
     const bid = toObjectId(billId, 'billId');
 
@@ -721,8 +703,11 @@ export class BillsService {
 
     // close session
     const closed = await this.staffSessions.closeSession(String(s0._id));
+    await this.tableModel.updateOne(
+      { _id: b0.tableId, status: { $ne: 'inactive' } },
+      { $set: { status: 'active' } },
+    );
 
-    // ✅ mark bill DONE (DONE = CANCELLED)
     const now = new Date();
     await this.billModel.updateOne(
       { _id: bid, restaurantId: RESTAURANT_ID, status: 'PAID' },
@@ -750,254 +735,267 @@ export class BillsService {
     };
   }
 
-  // add in BillsService class
-  // ✅ Customer bấm "Pay by cash" => bill PAID luôn, session PAID luôn
-async payCash(billId: string, tableId: string, token: string) {
-  if (!tableId || !token) throw new BadRequestException('Invalid table/token');
+  async payCash(billId: string, tableId: string, token: string) {
+    if (!tableId || !token) throw new BadRequestException('Invalid table/token');
 
-  let bid: Types.ObjectId;
-  try {
-    bid = new Types.ObjectId(billId);
-  } catch {
-    throw new BadRequestException('Invalid billId');
-  }
+    let bid: Types.ObjectId;
+    try {
+      bid = new Types.ObjectId(billId);
+    } catch {
+      throw new BadRequestException('Invalid billId');
+    }
 
-  // ✅ verify session from QR
-  const cur = await this.tableSessions.openOrGetActive(tableId, token);
-  const curSessionId = new Types.ObjectId(cur.sessionId);
+    const cur = await this.tableSessions.openOrGetActive(tableId, token);
+    const curSessionId = new Types.ObjectId(cur.sessionId);
 
-  // ✅ validate session exists & not closed
-  const s0: any = await this.sessionModel
-    .findOne({ _id: curSessionId, restaurantId: RESTAURANT_ID })
-    .lean();
+    const s0: any = await this.sessionModel
+      .findOne({ _id: curSessionId, restaurantId: RESTAURANT_ID })
+      .lean();
 
-  if (!s0) throw new NotFoundException('Session not found');
-  if (String(s0.status).toUpperCase() === 'CLOSED') {
-    throw new ConflictException('Session already closed');
-  }
+    if (!s0) throw new NotFoundException('Session not found');
+    if (String(s0.status).toUpperCase() === 'CLOSED') {
+      throw new ConflictException('Session already closed');
+    }
 
-  const now = new Date();
+    const now = new Date();
 
-  // ✅ atomic update bill -> PAID (prevents double pay)
-  const b: any = await this.billModel.findOneAndUpdate(
-    {
-      _id: bid,
-      restaurantId: RESTAURANT_ID,
-      sessionId: curSessionId,
-      status: { $in: ['REQUESTED', 'PAYMENT_PENDING'] }, // allow old pending too
-    },
-    {
-      $set: {
-        status: 'PAID',
-        method: 'CASH',
-        paidAt: now,
-      },
-    },
-    { new: true },
-  );
-
-  if (!b) {
-    throw new ConflictException('Bill cannot be paid (already paid or not found)');
-  }
-
-  const totalCents = Number(b.totalCents || 0);
-
-  // ✅ mark orders billed (snapshot orderIds)
-  const orderIds: Types.ObjectId[] = (b.orderIds ?? [])
-    .map((x: any) => {
-      try {
-        return new Types.ObjectId(x);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
-
-  if (orderIds.length) {
-    await this.orderModel.updateMany(
+    const b: any = await this.billModel.findOneAndUpdate(
       {
+        _id: bid,
         restaurantId: RESTAURANT_ID,
-        sessionId: b.sessionId,
-        _id: { $in: orderIds },
-        $or: [{ billId: null }, { billId: { $exists: false } }],
+        sessionId: curSessionId,
+        status: { $in: ['REQUESTED', 'PAYMENT_PENDING'] }, 
       },
-      { $set: { billId: b._id, billedAt: now } },
-    );
-  }
-
-  // ✅ Flow mới: pay => session PAID (waiter accept mới close)
-  await this.sessionModel.updateOne(
-    { _id: b.sessionId, restaurantId: RESTAURANT_ID },
-    { $set: { status: 'PAID', paidAt: now, activeBillId: b._id } },
-  );
-
-  // ✅ notify customer
-  this.publicGateway.emitToSession(b.sessionKey, 'bill.paid', {
-    billId: String(b._id),
-    status: 'PAID',
-    method: 'CASH',
-    totalCents,
-    paidAt: now.toISOString(),
-  });
-
-  // ✅ notify waiter
-  this.ordersGateway.emitBillPaid({
-    billId: String(b._id),
-    sessionId: String(b.sessionId),
-    tableNumber: b.tableNumberSnapshot,
-    method: 'CASH',
-    totalCents,
-    paidAt: now.toISOString(),
-  });
-
-  return {
-    ok: true,
-    billId: String(b._id),
-    status: 'PAID',
-    method: 'CASH',
-    totalCents,
-    paidAt: now.toISOString(),
-    sessionId: String(b.sessionId),
-  };
-}
-
-// BillsService
-async payOnlineByBillId(billId: string) {
-  let bid: Types.ObjectId;
-  try {
-    bid = new Types.ObjectId(billId);
-  } catch {
-    throw new BadRequestException('Invalid billId');
-  }
-
-  const now = new Date();
-
-  // find bill
-  const b0: any = await this.billModel.findOne({ _id: bid, restaurantId: RESTAURANT_ID }).lean();
-  if (!b0) throw new NotFoundException('Bill not found');
-
-  // validate session
-  const s0: any = await this.sessionModel.findOne({ _id: b0.sessionId, restaurantId: RESTAURANT_ID }).lean();
-  if (!s0) throw new NotFoundException('Session not found');
-  if (String(s0.status).toUpperCase() === 'CLOSED') throw new ConflictException('Session already closed');
-
-  // atomic set bill PAID ONLINE
-  const b: any = await this.billModel.findOneAndUpdate(
-    {
-      _id: bid,
-      restaurantId: RESTAURANT_ID,
-      status: { $in: ['REQUESTED', 'PAYMENT_PENDING'] },
-    },
-    { $set: { status: 'PAID', method: 'ONLINE', paidAt: now } },
-    { new: true },
-  );
-
-  if (!b) throw new ConflictException('Bill cannot be paid (already paid or cancelled)');
-
-  // mark orders billed (snapshot orderIds)
-  const orderIds: Types.ObjectId[] = (b.orderIds ?? [])
-    .map((x: any) => {
-      try {
-        return new Types.ObjectId(x);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
-
-  if (orderIds.length) {
-    await this.orderModel.updateMany(
       {
-        restaurantId: RESTAURANT_ID,
-        sessionId: b.sessionId,
-        _id: { $in: orderIds },
-        $or: [{ billId: null }, { billId: { $exists: false } }],
+        $set: {
+          status: 'PAID',
+          method: 'CASH',
+          paidAt: now,
+        },
       },
-      { $set: { billId: b._id, billedAt: now } },
+      { new: true },
     );
-  }
 
-  // session => PAID
-  await this.sessionModel.updateOne(
-    { _id: b.sessionId, restaurantId: RESTAURANT_ID },
-    { $set: { status: 'PAID', paidAt: now, activeBillId: b._id } },
-  );
+    if (!b) {
+      throw new ConflictException('Bill cannot be paid (already paid or not found)');
+    }
 
-  // emit sockets
-  this.publicGateway.emitToSession(b.sessionKey, 'bill.paid', {
-    billId: String(b._id),
-    status: 'PAID',
-    method: 'ONLINE',
-    paidAt: now.toISOString(),
-    totalCents: b.totalCents,
-  });
+    const totalCents = Number(b.totalCents || 0);
 
-  this.ordersGateway.emitBillPaid({
-    billId: String(b._id),
-    sessionId: String(b.sessionId),
-    tableNumber: b.tableNumberSnapshot,
-    method: 'ONLINE',
-    totalCents: b.totalCents,
-    paidAt: now.toISOString(),
-  });
+    const orderIds: Types.ObjectId[] = (b.orderIds ?? [])
+      .map((x: any) => {
+        try {
+          return new Types.ObjectId(x);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
 
-  return {
-    ok: true,
-    billId: String(b._id),
-    status: 'PAID',
-    method: 'ONLINE',
-    totalCents: b.totalCents,
-    paidAt: now.toISOString(),
-  };
-}
+    if (orderIds.length) {
+      await this.orderModel.updateMany(
+        {
+          restaurantId: RESTAURANT_ID,
+          sessionId: b.sessionId,
+          _id: { $in: orderIds },
+          $or: [{ billId: null }, { billId: { $exists: false } }],
+        },
+        { $set: { billId: b._id, billedAt: now } },
+      );
+    }
 
-async listMyBills(
-  actor: any,
-  args?: {
-    page?: number;
-    limit?: number;
-    datePreset?: 'today' | 'yesterday' | 'this_week' | 'this_month';
-    from?: string;
-    to?: string;
-  },
-) {
-  const { page, limit, skip } = this.parsePaging(args);
-  const createdAtRange = this.parseDateRange(args);
+    await this.sessionModel.updateOne(
+      { _id: b.sessionId, restaurantId: RESTAURANT_ID },
+      { $set: { status: 'PAID', paidAt: now, activeBillId: b._id } },
+    );
 
-  const match: any = {
-    restaurantId: RESTAURANT_ID,
-    customerSubjectType: actor.subjectType,
-    customerSubjectId: actor.subjectId,
-  };
-  if (createdAtRange) match.createdAt = createdAtRange;
-
-  const [total, bills] = await Promise.all([
-    this.billModel.countDocuments(match),
-    this.billModel
-      .find(match)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
-  ]);
-
-  return {
-    ok: true,
-    total,
-    page,
-    limit,
-    bills: bills.map((b: any) => ({
+    this.publicGateway.emitToSession(b.sessionKey, 'bill.paid', {
       billId: String(b._id),
-      status: b.status,
-      method: b.method ?? null,
-      totalCents: Number(b.totalCents || 0),
-      tableNumber: b.tableNumberSnapshot,
-      sessionId: String(b.sessionId),
-      requestedAt: b.requestedAt ? new Date(b.requestedAt).toISOString() : null,
-      paidAt: b.paidAt ? new Date(b.paidAt).toISOString() : null,
-      createdAt: b.createdAt ? new Date(b.createdAt).toISOString() : null,
-    })),
-  };
-}
+      status: 'PAID',
+      method: 'CASH',
+      totalCents,
+      paidAt: now.toISOString(),
+    });
 
+    this.ordersGateway.emitBillPaid({
+      billId: String(b._id),
+      sessionId: String(b.sessionId),
+      tableNumber: b.tableNumberSnapshot,
+      method: 'CASH',
+      totalCents,
+      paidAt: now.toISOString(),
+    });
+
+    return {
+      ok: true,
+      billId: String(b._id),
+      status: 'PAID',
+      method: 'CASH',
+      totalCents,
+      paidAt: now.toISOString(),
+      sessionId: String(b.sessionId),
+    };
+  }
+
+  async payOnlineByBillId(billId: string) {
+    let bid: Types.ObjectId;
+    try {
+      bid = new Types.ObjectId(billId);
+    } catch {
+      throw new BadRequestException('Invalid billId');
+    }
+
+    const now = new Date();
+
+    const b0: any = await this.billModel.findOne({ _id: bid, restaurantId: RESTAURANT_ID }).lean();
+    if (!b0) throw new NotFoundException('Bill not found');
+
+    const s0: any = await this.sessionModel.findOne({ _id: b0.sessionId, restaurantId: RESTAURANT_ID }).lean();
+    if (!s0) throw new NotFoundException('Session not found');
+    if (String(s0.status).toUpperCase() === 'CLOSED') throw new ConflictException('Session already closed');
+
+    const b: any = await this.billModel.findOneAndUpdate(
+      {
+        _id: bid,
+        restaurantId: RESTAURANT_ID,
+        status: { $in: ['REQUESTED', 'PAYMENT_PENDING'] },
+      },
+      { $set: { status: 'PAID', method: 'ONLINE', paidAt: now } },
+      { new: true },
+    );
+
+    if (!b) throw new ConflictException('Bill cannot be paid (already paid or cancelled)');
+
+    const orderIds: Types.ObjectId[] = (b.orderIds ?? [])
+      .map((x: any) => {
+        try {
+          return new Types.ObjectId(x);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+
+    if (orderIds.length) {
+      await this.orderModel.updateMany(
+        {
+          restaurantId: RESTAURANT_ID,
+          sessionId: b.sessionId,
+          _id: { $in: orderIds },
+          $or: [{ billId: null }, { billId: { $exists: false } }],
+        },
+        { $set: { billId: b._id, billedAt: now } },
+      );
+    }
+
+    await this.sessionModel.updateOne(
+      { _id: b.sessionId, restaurantId: RESTAURANT_ID },
+      { $set: { status: 'PAID', paidAt: now, activeBillId: b._id } },
+    );
+
+    this.publicGateway.emitToSession(b.sessionKey, 'bill.paid', {
+      billId: String(b._id),
+      status: 'PAID',
+      method: 'ONLINE',
+      paidAt: now.toISOString(),
+      totalCents: b.totalCents,
+    });
+
+    this.ordersGateway.emitBillPaid({
+      billId: String(b._id),
+      sessionId: String(b.sessionId),
+      tableNumber: b.tableNumberSnapshot,
+      method: 'ONLINE',
+      totalCents: b.totalCents,
+      paidAt: now.toISOString(),
+    });
+
+    return {
+      ok: true,
+      billId: String(b._id),
+      status: 'PAID',
+      method: 'ONLINE',
+      totalCents: b.totalCents,
+      paidAt: now.toISOString(),
+    };
+  }
+
+  async listMyBills(
+    actor: { subjectType: 'USER' | 'ACCOUNT'; subjectId: string } | null | undefined,
+    args?: {
+      page?: number;
+      limit?: number;
+      datePreset?: 'today' | 'yesterday' | 'this_week' | 'this_month';
+      from?: string;
+      to?: string;
+    },
+  ) {
+    if (!actor?.subjectType || !actor?.subjectId) {
+      throw new BadRequestException('Missing actor');
+    }
+
+    const { page, limit, skip } = this.parsePaging(args);
+    const createdAtRange = this.parseDateRange(args);
+
+    const match: any = {
+      restaurantId: RESTAURANT_ID,
+      customerSubjectType: actor.subjectType,
+      customerSubjectId: String(actor.subjectId),
+    };
+
+    if (createdAtRange) match.createdAt = createdAtRange;
+
+    const [total, bills] = await Promise.all([
+      this.billModel.countDocuments(match),
+      this.billModel.find(match).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+    ]);
+
+    const allOrderIds: Types.ObjectId[] = [];
+    for (const b of bills as any[]) {
+      for (const oid of b.orderIds ?? []) {
+        try {
+          allOrderIds.push(new Types.ObjectId(oid));
+        } catch {}
+      }
+    }
+
+    const orders = allOrderIds.length
+      ? await this.orderModel
+          .find({
+            restaurantId: RESTAURANT_ID,
+            _id: { $in: allOrderIds },
+            status: { $nin: ['draft', 'cancelled'] },
+          })
+          .sort({ createdAt: 1 })
+          .lean()
+      : [];
+
+    const orderMap = new Map<string, any>();
+    for (const o of orders) orderMap.set(String(o._id), o);
+
+    const maps = await this.buildModifierNameMaps(orders);
+
+    return {
+      ok: true,
+      total,
+      page,
+      limit,
+      bills: (bills as any[]).map((b: any) => ({
+        billId: String(b._id),
+        status: b.status,
+        method: b.method ?? null,
+        totalCents: Number(b.totalCents || 0),
+        tableNumber: b.tableNumberSnapshot,
+        sessionId: String(b.sessionId),
+        note: b.note ?? '',
+
+        requestedAt: b.requestedAt ? new Date(b.requestedAt).toISOString() : null,
+        paidAt: b.paidAt ? new Date(b.paidAt).toISOString() : null,
+        createdAt: b.createdAt ? new Date(b.createdAt).toISOString() : null,
+
+        orderIds: (b.orderIds ?? []).map((x: any) => String(x)),
+        orders: this.toBillOrders(orderMap, b, maps),
+      })),
+    };
+  }
 }

@@ -1,14 +1,28 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+  UseInterceptors,
+  UploadedFiles,
+} from '@nestjs/common';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ItemReviewsService } from './item-reviews.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CreateItemReviewDto } from './dto/create-item-review.dto';
 import { UpdateItemReviewDto } from './dto/update-item-review.dto';
+import { imageFileFilter, reviewPhotoStorage } from './reviews.upload';
 
 @Controller('/api')
 export class ItemReviewsController {
   constructor(private readonly reviews: ItemReviewsService) {}
 
-  // public list reviews for an item
   @Get('/items/:itemId/reviews')
   list(
     @Param('itemId') itemId: string,
@@ -18,7 +32,6 @@ export class ItemReviewsController {
     return this.reviews.listForItem(itemId, { page: Number(page), limit: Number(limit) });
   }
 
-  // my reviews
   @UseGuards(JwtAuthGuard)
   @Get('/reviews/me')
   listMine(@Req() req: any) {
@@ -29,29 +42,68 @@ export class ItemReviewsController {
     });
   }
 
-  // create review
   @UseGuards(JwtAuthGuard)
   @Post('/items/:itemId/reviews')
-  create(@Param('itemId') itemId: string, @Req() req: any, @Body() dto: CreateItemReviewDto) {
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [{ name: 'photos', maxCount: 6 }],
+      {
+        storage: reviewPhotoStorage(),
+        fileFilter: imageFileFilter,
+        limits: { fileSize: 5 * 1024 * 1024 },
+      },
+    ),
+  )
+  create(
+    @Param('itemId') itemId: string,
+    @Req() req: any,
+    @Body() dto: CreateItemReviewDto,
+    @UploadedFiles() files?: { photos?: Express.Multer.File[] },
+  ) {
+    const photoUrls = (files?.photos ?? []).map((f) => `/uploads/review-photos/${f.filename}`);
+
     return this.reviews.create(
       itemId,
-      { rating: dto.rating, comment: dto.comment },
+      {
+        rating: Number(dto.rating),
+        comment: dto.comment,
+        photoUrls,
+      },
       { subjectType: req.user.subjectType, subjectId: req.user.subjectId, role: req.user.role },
     );
   }
 
-  // update review
   @UseGuards(JwtAuthGuard)
   @Patch('/reviews/:reviewId')
-  update(@Param('reviewId') reviewId: string, @Req() req: any, @Body() dto: UpdateItemReviewDto) {
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [{ name: 'photos', maxCount: 6 }],
+      {
+        storage: reviewPhotoStorage(),
+        fileFilter: imageFileFilter,
+        limits: { fileSize: 5 * 1024 * 1024 },
+      },
+    ),
+  )
+  update(
+    @Param('reviewId') reviewId: string,
+    @Req() req: any,
+    @Body() dto: UpdateItemReviewDto,
+    @UploadedFiles() files?: { photos?: Express.Multer.File[] },
+  ) {
+    const newPhotoUrls = (files?.photos ?? []).map((f) => `/uploads/review-photos/${f.filename}`);
+
     return this.reviews.update(
       reviewId,
-      { rating: dto.rating, comment: dto.comment, status: dto.status },
+      {
+        rating: dto.rating !== undefined ? Number(dto.rating) : undefined,
+        comment: dto.comment,
+        appendPhotoUrls: newPhotoUrls,
+      },
       { subjectType: req.user.subjectType, subjectId: req.user.subjectId, role: req.user.role },
     );
   }
 
-  // delete review (soft)
   @UseGuards(JwtAuthGuard)
   @Delete('/reviews/:reviewId')
   remove(@Param('reviewId') reviewId: string, @Req() req: any) {
