@@ -11,7 +11,11 @@ export function sortObject(obj: Record<string, any>) {
 
 export function buildQuery(params: Record<string, any>) {
   return Object.keys(params)
-    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(String(params[k]))}`)
+    .map((k) => {
+      const value = String(params[k]);
+      const encodedValue = encodeURIComponent(value).replace(/%20/g, '+');
+      return `${k}=${encodedValue}`;
+    })
     .join('&');
 }
 
