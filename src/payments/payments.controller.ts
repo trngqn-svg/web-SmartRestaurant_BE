@@ -10,11 +10,11 @@ function getClientIp(req: Request) {
   return req.ip || '127.0.0.1';
 }
 
-@Controller('/api/payments/vnpay')
+@Controller('/api')
 export class PaymentsController {
   constructor(private readonly svc: PaymentsService) {}
 
-  @Post('/create')
+  @Post('/payments/vnpay/create')
   async create(@Body() dto: CreateVnpayDto, @Req() req: Request) {
     return this.svc.createVnpayPayment(dto, {
       restaurantId: RESTAURANT_ID,
@@ -22,18 +22,23 @@ export class PaymentsController {
     });
   }
 
-  @Get('/return')
+  @Get('/payment/vnpay-return')
   async vnpReturn(@Query() query: any) {
     return this.svc.handleVnpayReturn(query, { restaurantId: RESTAURANT_ID });
   }
 
-  @Get('/ipn')
+  @Get('/payments/vnpay/ipn')
   async ipnGet(@Query() query: any) {
     return this.svc.handleVnpayIpn(query, { restaurantId: RESTAURANT_ID });
   }
 
-  @Post('/ipn')
+  @Post('/payments/vnpay/ipn')
   async ipnPost(@Body() body: any) {
     return this.svc.handleVnpayIpn(body, { restaurantId: RESTAURANT_ID });
+  }
+
+  @Get('/payments/vnpay/status')
+  async status(@Query('txnRef') txnRef: string) {
+    return this.svc.getVnpayStatus(txnRef, { restaurantId: RESTAURANT_ID });
   }
 }

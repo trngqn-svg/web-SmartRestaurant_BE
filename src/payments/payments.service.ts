@@ -193,13 +193,18 @@ export class PaymentsService {
 
   async handleVnpayReturn(rawQuery: Record<string, any>, ctx: { restaurantId: string }) {
     const hashSecret = this.mustGetEnv('VNP_HASH_SECRET');
-
     const vnp = pickVnpParams(rawQuery);
-    const v = verifyVnpaySecureHash(vnp, hashSecret);
 
     const txnRef = asString(vnp['vnp_TxnRef']);
     const responseCode = asString(vnp['vnp_ResponseCode']);
     const transactionNo = asString(vnp['vnp_TransactionNo']);
+
+    let verified = false;
+    try {
+      verified = verifyVnpaySecureHash(vnp, hashSecret).ok;
+    } catch {
+      verified = false;
+    }
 
     if (txnRef) {
       await this.paymentModel.updateOne(
@@ -216,11 +221,11 @@ export class PaymentsService {
 
     return {
       ok: true,
-      verified: v.ok,
+      verified,
       txnRef,
       responseCode,
       transactionNo,
-      message: asString(vnp['vnp_OrderInfo']),
+      shouldPoll: true,
     };
   }
 
@@ -334,5 +339,37 @@ export class PaymentsService {
     });
 
     return { RspCode: '00', Message: 'Confirm Success' };
+  }
+
+  async getVnpayStatus(txnRef: string, ctx: { restaurantId: string }) {
+    if (!txnRef) throw new BadRequestException('Missing txnRef');
+
+    const payment: any = await this.paymentModel
+      .findOne({ restaurantId: ctx.restaurantId, provider: 'VNPAY', txnRef })
+      .select('status billId vnpResponseCode vnpTransactionNo createdAt updatedAt')
+      .lean();
+
+    if (!payment) throw new NotFoundException('Payment not found');
+
+    const bill: any = await this.billModel
+      .findOne({ _id: payment.billId, restaurantId: ctx.restaurantId })
+      .select('status paidAt totalCents method')
+      .lean();
+
+    return {
+      txnRef,
+      paymentStatus: payment.status,
+      vnpResponseCode: payment.vnpResponseCode ?? null,
+      vnpTransactionNo: payment.vnpTransactionNo ?? null,
+      bill: bill
+        ? {
+            billId: String(payment.billId),
+            status: bill.status,
+            method: bill.method,
+            paidAt: bill.paidAt ?? null,
+            totalCents: Number(bill.totalCents || 0),
+          }
+        : null,
+    };
   }
 }
