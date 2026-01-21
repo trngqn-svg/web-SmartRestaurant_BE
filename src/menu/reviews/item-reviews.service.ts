@@ -1,7 +1,5 @@
-// item-reviews.service.ts
 import {
   BadRequestException,
-  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -10,7 +8,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
 import { RESTAURANT_ID } from '../../config/restaurant.config';
-import { ItemReview, ItemReviewDocument, ReviewStatus } from './item-review.schema';
+import { ItemReview, ItemReviewDocument } from './item-review.schema';
 import { MenuItem, MenuItemDocument } from '../../menu/items/item.schema';
 
 type Actor = { subjectType: 'USER' | 'ACCOUNT'; subjectId: string; role?: string };
@@ -44,7 +42,16 @@ function validateRating(r: any) {
 }
 
 function normalizeComment(s: any) {
-  return String(s ?? '').trim();
+  const t = String(s ?? '').trim();
+  return t;
+}
+
+function normalizeUrls(xs: any) {
+  if (!Array.isArray(xs)) return [];
+  return xs
+    .map((x) => String(x ?? '').trim())
+    .filter(Boolean)
+    .slice(0, 12);
 }
 
 @Injectable()
@@ -54,13 +61,11 @@ export class ItemReviewsService {
     @InjectModel(MenuItem.name) private readonly itemModel: Model<MenuItemDocument>,
   ) {}
 
-  /** Recompute from published + not deleted reviews and sync into MenuItem. */
   private async syncItemRating(itemId: Types.ObjectId) {
     const filter = {
       restaurantId: RESTAURANT_ID,
       itemId,
       isDeleted: false,
-      status: 'published' as const,
     };
 
     const rows = await this.reviewModel.aggregate([
@@ -84,7 +89,6 @@ export class ItemReviewsService {
     const ratingCount = row?.count ? Number(row.count) : 0;
     const sum = row?.sum ? Number(row.sum) : 0;
 
-    // round to 2 decimals
     const ratingAvg =
       ratingCount > 0 ? Math.round((sum / ratingCount) * 100) / 100 : 0;
 
@@ -115,19 +119,46 @@ export class ItemReviewsService {
       restaurantId: RESTAURANT_ID,
       itemId: iid,
       isDeleted: false,
-      status: 'published' as const,
     };
 
     const skip = (page - 1) * limit;
 
-    const [total, xs] = await Promise.all([
+    const [total, rows] = await Promise.all([
       this.reviewModel.countDocuments(filter),
-      this.reviewModel
-        .find(filter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
+      this.reviewModel.aggregate([
+        { $match: filter },
+        { $sort: { createdAt: -1 } },
+        { $skip: skip },
+        { $limit: limit },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'userId',
+            foreignField: '_id',
+            as: 'u',
+          },
+        },
+        { $unwind: { path: '$u', preserveNullAndEmptyArrays: true } },
+
+        {
+          $project: {
+            _id: 1,
+            itemId: 1,
+            userId: 1,
+            rating: 1,
+            comment: 1,
+            photoUrls: 1,
+            createdAt: 1,
+            user: {
+              userId: {
+                $cond: [{ $ifNull: ['$u._id', false] }, { $toString: '$u._id' }, null],
+              },
+              fullName: { $ifNull: ['$u.fullName', ''] },
+              avatarUrl: { $ifNull: ['$u.avatarUrl', '/uploads/avatars/default.png'] },
+            },
+          },
+        },
+      ]),
     ]);
 
     return {
@@ -135,12 +166,14 @@ export class ItemReviewsService {
       total,
       page,
       limit,
-      reviews: xs.map((r: any) => ({
+      reviews: rows.map((r: any) => ({
         reviewId: String(r._id),
         itemId: String(r.itemId),
         userId: r.userId ? String(r.userId) : null,
+        user: r.userId ? r.user : null,
         rating: r.rating,
         comment: r.comment ?? '',
+        photoUrls: Array.isArray(r.photoUrls) ? r.photoUrls : [],
         createdAt: r.createdAt?.toISOString?.(),
       })),
     };
@@ -164,16 +197,21 @@ export class ItemReviewsService {
       reviews: xs.map((r) => ({
         reviewId: String(r._id),
         itemId: String(r.itemId),
+        userId: r.userId ? String(r.userId) : null,
         rating: r.rating,
         comment: r.comment ?? '',
-        status: r.status,
+        photoUrls: Array.isArray(r.photoUrls) ? r.photoUrls : [],
         createdAt: r.createdAt?.toISOString?.(),
         updatedAt: r.updatedAt?.toISOString?.(),
       })),
     };
   }
 
-  async create(itemId: string, dto: { rating: number; comment?: string }, actor: Actor) {
+  async create(
+    itemId: string,
+    dto: { rating: number; comment?: string; photoUrls?: string[] },
+    actor: Actor,
+  ) {
     mustBeUser(actor);
 
     const iid = toObjectId(itemId, 'itemId');
@@ -181,43 +219,37 @@ export class ItemReviewsService {
 
     const rating = validateRating(dto.rating);
     const comment = normalizeComment(dto.comment);
+    const photoUrls = normalizeUrls(dto.photoUrls);
 
-    try {
-      const r: any = await this.reviewModel.create({
-        restaurantId: RESTAURANT_ID,
-        itemId: iid,
-        userId: uid,
-        rating,
-        comment,
-        status: 'published' as const,
-        isDeleted: false,
-      });
+    const r: any = await this.reviewModel.create({
+      restaurantId: RESTAURANT_ID,
+      itemId: iid,
+      userId: uid,
+      rating,
+      comment,
+      photoUrls,
+      isDeleted: false,
+    });
 
-      await this.syncItemRating(iid);
+    await this.syncItemRating(iid);
 
-      return {
-        ok: true,
-        review: {
-          reviewId: String(r._id),
-          itemId: String(r.itemId),
-          userId: String(r.userId),
-          rating: r.rating,
-          comment: r.comment ?? '',
-          status: r.status,
-          createdAt: r.createdAt?.toISOString?.(),
-        },
-      };
-    } catch (e: any) {
-      if (String(e?.code) === '11000') {
-        throw new ConflictException('You already reviewed this item. Please edit your review.');
-      }
-      throw e;
-    }
+    return {
+      ok: true,
+      review: {
+        reviewId: String(r._id),
+        itemId: String(r.itemId),
+        userId: String(r.userId),
+        rating: r.rating,
+        comment: r.comment ?? '',
+        photoUrls: r.photoUrls ?? [],
+        createdAt: r.createdAt?.toISOString?.(),
+      },
+    };
   }
 
   async update(
     reviewId: string,
-    dto: { rating?: number; comment?: string; status?: ReviewStatus },
+    dto: { rating?: number; comment?: string; appendPhotoUrls?: string[] },
     actor: Actor,
   ) {
     mustBeUser(actor);
@@ -238,21 +270,26 @@ export class ItemReviewsService {
 
     if (dto.rating !== undefined) patch.rating = validateRating(dto.rating);
     if (dto.comment !== undefined) patch.comment = normalizeComment(dto.comment);
-    if (dto.status !== undefined) patch.status = dto.status;
 
-    if (!Object.keys(patch).length) {
+    const appendPhotoUrls = normalizeUrls(dto.appendPhotoUrls);
+    const hasAppend = appendPhotoUrls.length > 0;
+
+    if (!Object.keys(patch).length && !hasAppend) {
       throw new BadRequestException('No changes');
     }
+
+    const updateOps: any = {};
+    if (Object.keys(patch).length) updateOps.$set = patch;
+    if (hasAppend) updateOps.$push = { photoUrls: { $each: appendPhotoUrls } };
 
     const r: any = await this.reviewModel
       .findOneAndUpdate(
         { _id: rid, restaurantId: RESTAURANT_ID, isDeleted: false },
-        { $set: patch },
+        updateOps,
         { new: true },
       )
       .lean();
 
-    // rating stats may change when rating OR status changes
     await this.syncItemRating(r.itemId);
 
     return {
@@ -260,9 +297,10 @@ export class ItemReviewsService {
       review: {
         reviewId: String(r._id),
         itemId: String(r.itemId),
+        userId: r.userId ? String(r.userId) : null,
         rating: r.rating,
         comment: r.comment ?? '',
-        status: r.status,
+        photoUrls: r.photoUrls ?? [],
         updatedAt: r.updatedAt?.toISOString?.(),
       },
     };
@@ -287,7 +325,7 @@ export class ItemReviewsService {
 
     await this.reviewModel.updateOne(
       { _id: rid, restaurantId: RESTAURANT_ID },
-      { $set: { isDeleted: true, status: 'hidden' as const } },
+      { $set: { isDeleted: true } },
     );
 
     await this.syncItemRating(existing.itemId);

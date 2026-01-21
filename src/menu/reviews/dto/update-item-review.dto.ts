@@ -1,8 +1,9 @@
-import { IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
-import type { ReviewStatus } from '../item-review.schema';
+import { Type } from 'class-transformer';
+import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
 export class UpdateItemReviewDto {
   @IsOptional()
+  @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(5)
@@ -12,8 +13,4 @@ export class UpdateItemReviewDto {
   @IsString()
   @MaxLength(1000)
   comment?: string;
-
-  @IsOptional()
-  @IsIn(['published', 'hidden'])
-  status?: ReviewStatus;
 }
